@@ -1,0 +1,291 @@
+---
+title: "Quality activity recognition of six male subjects using Machine Learning"
+author: "Mohamad Barad"
+date: 31-01-2022
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, message = FALSE, warning = FALSE)
+library(caret)
+```
+
+# Introduction
+The data in this project is found from the following source see the link below.  The aim of this assignment is to quantify how well participants are performing a weight lifting exercise based on predefined category of weightlifting modes. The classes are as follows and are more specified in [1]. So class A is the exercise performed according to the speciﬁcation. Class B is done by throwing the elbows to the front. Class C is performed by lifting the dumbbell only halfway, and Class D is lowering the dumbbell only halfway. Finally class E is done by throwing the hips to the front. So Class A represents the correct way of weight lifting while the 4 other classes are wrong ways of performing the exercise. 
+
+\link{http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har}
+
+# Data 
+
+The data is red and from the source URLs and loaded into R for analysis
+```{r Data loading}
+# Loading training data
+url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url_train, destfile = "training.csv")
+training <- read.csv("training.csv")
+# Loading the testing data
+url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(url_train, destfile = "testing.csv")
+testing <- read.csv("testing.csv")
+
+# Setting seed
+set.seed(2323)
+```
+
+Before carrying out with model building, data cleaning is necessary. This includes removing variables that contributes little to nothing to the dependent variable which is 'classe', like variables with more than 97 % of NAs and moreover empty columns are also removed. 
+
+The first 7 variables where also removed putting the focus  on the sensor variables and Razor inertial measurement units. 
+
+```{r data cleaning}
+# Converting the dependent variabels to factor
+training$classe <- as.factor(training$classe)
+
+# Removing columns with NAs and empty columns
+training <- training[ ,colSums(is.na(training) | training == "") == 0]
+# Removing the first 7 variables
+training <- training[ , -c(1:7)]
+```
+
+In order to explore some of the variables which might be used to classify the tasks, the different eurler angles were plotted against the total acceleration of the different sensors and classes (coloured) in the plots. Taking the Pitch angle as an example it is observed that class A cleary i distingued from the other classes. 
+
+```{r data plotting}
+# Data exploratory
+library(ggplot2);library(gridExtra);library(caret)
+# Pitch
+p1 <- ggplot(training, aes(x = total_accel_dumbbell,y = pitch_dumbbell, fill = classe, colour = classe))+
+        geom_col()
+p2 <- ggplot(training, aes(x = total_accel_arm,y = pitch_arm, fill = classe, colour = classe))+
+        geom_col()
+p3 <- ggplot(training, aes(x = total_accel_forearm,y = pitch_forearm, fill = classe, colour = classe))+
+        geom_col()
+p4 <- ggplot(training, aes(x = total_accel_belt,y = pitch_belt, fill = classe, colour = classe))+
+        geom_col()
+grid.arrange(p1,p2,p3,p4,ncol=2)
+```
+
+Exploring some of the classes with linear fitting models and comparing those to class A in the following plots. 
+
+```{r gyros class comparisons}
+p1 <- ggplot(training[which(training$classe == c("A","D")),], 
+             aes(y = gyros_arm_y,x = total_accel_arm, fill = classe, colour = classe))+
+        geom_point()+
+        geom_smooth(method = "glm")
+p2 <- ggplot(training[which(training$classe == c("A","D")),], 
+             aes(y = magnet_arm_y, x = total_accel_arm, fill = classe, colour = classe))+
+        geom_point()+
+        geom_smooth(method = "glm")
+
+p3 <- ggplot(training[which(training$classe == c("A","D")),], 
+             aes(y = accel_arm_y, x = total_accel_arm, fill = classe, colour = classe))+
+        geom_point()+
+        geom_smooth(method = "glm")
+grid.arrange(p1,p2,p3,ncol=1)
+```
+
+Now it is a bit difficult to plot all 52 variables in one plot in order to see how they correlate to the 53th variable which is out dependent variable. Therefore, as an example only some of the variables are plotted and the correlations were visualised. 
+```{r correlation}
+library(GGally)
+g <- ggpairs(training[,c("classe","roll_arm","yaw_arm","pitch_arm")], lower= list(continuous = wrap("smooth", method = "glm")))
+g
+```
+
+# Machine Learning modelling
+The method chosen for cross validation is K-fold cross validation. Here it is a 10 fold cross validation sequencing through 10 values of k trying to find the most optimal value that yields highest accuracy. The 10 fold cross validation is used in all models in order to find the most optimal model. 
+
+In this analysis four models are analyized and compared: k-nearest neigghbour, tree, random forest and bagging model. 
+
+So the plan during model development is, to split training set into two parts, which allows for training one one part and modifying and testing on the other part. Then the testing set is split into a validation set and a final test set which will evaluate the overall performance of the models. The models are evaluated using the accuracy parameter. Other peratmeters could also have been used, but accuracy was used in this case. 
+
+K-nearst neighbour: 
+```{r k-nearest neighboris k}
+# caret snippet
+# Source of snippet: https://github.com/mariocastro73/ML2020-2021
+train.index <- createDataPartition(training[,"classe"],p=0.75,list=FALSE)
+training.trn <- training[train.index,]
+training.tst <- training[-train.index,]
+
+ctrl  <- trainControl(method  = "cv",number  = 10)
+
+# K-nearst neighbors 
+knn.mod <- train(classe ~ ., data = training.trn, method = "knn",
+        trControl = ctrl, 
+        preProcess = c("center","scale"), 
+        tuneGrid =data.frame(k=seq(1,5,by = 1)))
+        # tuneLength = 50)
+
+# Prediction with other part of training set 
+knn.pred <- predict(knn.mod,training.tst)
+# Confusion matrix 
+knn.con.M <- confusionMatrix(table(training.tst[,"classe"],knn.pred))
+```
+
+The tree model: 
+
+```{r tree model}
+# tree
+tree.mod <- train(classe ~ ., data = training.trn, method = "rpart",
+        trControl = ctrl, 
+        preProcess = c("center","scale"))
+
+tree.pred <- predict(tree.mod,training.tst)
+tree.con.M <- confusionMatrix(table(training.tst[,"classe"],tree.pred))
+
+library(rattle)
+fancyRpartPlot(tree.mod$finalModel)
+
+```
+
+Random Forest model: 
+
+```{r random forest model}
+# rf
+rf.mod <- train(classe ~ ., data = training.trn, method = "rf",
+        trControl = ctrl, 
+        preProcess = c("center","scale"))
+
+rf.pred <- predict(rf.mod,training.tst)
+rf.con.M <- confusionMatrix(table(training.tst[,"classe"],rf.pred))
+```
+
+Bootstrap-aggregering or Bagging model: 
+
+```{r bagging model}
+# bootstrap-aggregering model
+garbage <- capture.output(
+gbm.mod <- train(classe ~ ., data = training.trn, method = "gbm",
+        trControl = ctrl, 
+        preProcess = c("center","scale"))
+)
+
+gbm.pred <- predict(gbm.mod,training.tst)
+gbm.con.M <- confusionMatrix(table(training.tst[,"classe"],gbm.pred))
+```
+
+```{r training summary}
+# Summary of training set accuracy for the 4 models
+Acc.Sum.Train <- data.frame(knn = knn.con.M$overall[1],
+                          tree= tree.con.M$overall[1],
+                          rf = rf.con.M$overall[1],
+                          gbm = gbm.con.M$overall[1])
+Acc.Sum.Train
+```
+
+To visualize the different models and their accuracies as a function of different modifying parameters the following plot is presented. It is clear from the plot that the highest accuracy is achieved with the random forest model. 
+
+```{r}
+library(gridExtra)
+trellis.par.set(caretTheme())
+p1 <- plot(knn.mod, main="knn")  
+p2 <- plot(tree.mod, main="rpart")
+p3 <- plot(rf.mod, main="rf")
+p4 <- plot(gbm.mod, main="gbm")
+grid.arrange(p1,p2,p3,p4, ncol = c(2))
+```
+
+
+# Results
+So from the models obove it seems like that the random forest model performs best with regards to classifying the activities based on the 52 predictors. 
+
+In order to evaluate our models, the testing data set will be split into a validation and a final testing set after cleaning up the testing model as we did with the training model. 
+
+```{r testing data set }
+# Converting the testing variable 
+testing$classe <- as.factor(testing$classe)
+# Removing the first 7 variables
+testing <- testing[,-c(1:7)]
+# Removing columns with NAs and empty columns
+testing <- testing[,colSums(is.na(testing) | testing == "") == 0]
+
+test.index <- createDataPartition(testing[,"classe"],p=0.50,list=FALSE)
+# Creating a validating data set 
+test.val <- testing[test.index,]
+# Creating the final testing data set
+test.final <- testing[-test.index,]
+
+```
+
+Here we are testing our models on the validation data set be fore the final evaluation on the testing data set:
+```{r model evaluation on validation set}
+# Testing the 4 models on validation set
+knn.val.pred <- predict(knn.mod,test.val)
+knn.val.con.M <- confusionMatrix(table(test.val[,"classe"],knn.val.pred))
+
+
+tree.val.pred <- predict(tree.mod,test.val)
+tree.val.con.M <- confusionMatrix(table(test.val[,"classe"],tree.val.pred))
+
+
+rf.val.pred <- predict(rf.mod,test.val)
+rf.val.con.M <- confusionMatrix(table(test.val[,"classe"],rf.val.pred))
+
+
+gbm.val.pred <- predict(gbm.mod,test.val)
+gbm.val.con.M <- confusionMatrix(table(test.val[,"classe"],gbm.val.pred))
+
+
+# summary for validation set
+Acc.Sum.Val <- data.frame(knn = knn.val.con.M$overall[1],
+                          tree= tree.val.con.M$overall[1],
+                          rf = rf.val.con.M$overall[1],
+                          gbm = gbm.val.con.M$overall[1])
+Acc.Sum.Val 
+```
+
+From the comparison above, the random forest still yields the highest accuracy but only slightly above knn model, whereas the tree model is performing the worst of the four models. 
+
+Final evaluations: 
+
+```{r final evaluations}
+# Testing the 4 models on the final test set
+knn.test.pred <- predict(knn.mod,test.final)
+knn.test.con.M <- confusionMatrix(table(test.final[,"classe"],knn.test.pred))
+
+
+tree.test.pred <- predict(tree.mod,test.final)
+tree.test.con.M <- confusionMatrix(table(test.final[,"classe"],tree.test.pred))
+
+
+rf.test.pred <- predict(rf.mod,test.final)
+rf.test.con.M <- confusionMatrix(table(test.final[,"classe"],rf.test.pred))
+
+
+gbm.test.pred <- predict(gbm.mod,test.final)
+gbm.test.con.M <- confusionMatrix(table(test.final[,"classe"],gbm.test.pred))
+
+# summary for validation set
+Acc.Sum.Test <- data.frame(knn = knn.test.con.M$overall[1],
+                          tree= tree.test.con.M$overall[1],
+                          rf = rf.test.con.M$overall[1],
+                          gbm = gbm.test.con.M$overall[1])
+Acc.Sum.Test
+```
+
+Assessing the out of sample error gives the lowest out sample error for rf and knn so this also reflect the choice made in this assignment going forward with random forest model. 
+
+
+```{r out of sample error }
+mspe <- function(model, dv, data) {
+  yhat <- as.numeric(predict(model, newdata=data))
+  y <- as.numeric(data[[dv]])
+  mean((y - yhat)^2)
+}
+
+
+OutError <- data.frame(
+        knnErr = mspe(knn.mod,"classe",test.final),
+        treeRrr = mspe(tree.mod,"classe",test.final),
+        rfErr = mspe(rf.mod,"classe",test.final),
+        gbmErr = mspe(gbm.mod,"classe",test.final)
+)
+OutError
+
+```
+
+# Conclusion
+Based on the accuracy values it seems like the 'rf' model perfoms best with 99.8 % and worst is the tree model with 49.6 %. The out of sample error for rf = 0.0013 was very low compared to tree model = 2.23.  So for the quiz questions in the 'rf' was used and was able to predict all cases correctly which was also a form of evaluation of the model accuracy. 
+
+# Reference
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. 
+
